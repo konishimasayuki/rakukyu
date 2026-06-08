@@ -1385,6 +1385,7 @@ function SettingsTab({ settings, setSettings, saveSettings, setEmployees, employ
 
   const save = () => {
     setSettings(s);
+    if (typeof saveSettings === "function") saveSettings(s);
     setSaved(true);
     setTimeout(()=>setSaved(false),2000);
   };
@@ -3112,7 +3113,7 @@ function YearEndAdj({ employees, settings, getMI, getAtt, getBonus, yearEndData,
   };
 
   const upd = (empId, field, val) =>
-    setYearEndData(prev => ({ ...prev, [empId]: { ...(prev[empId]||{}), [field]: val } }));
+    saveYearEnd(prev => ({ ...prev, [empId]: { ...(prev[empId]||{}), [field]: val } }));
 
   const d = yearEndData[selectedEmpId] || {};
   const result = selectedEmpId ? calcYearEnd(selectedEmpId) : null;
