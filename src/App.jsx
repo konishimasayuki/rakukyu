@@ -1437,7 +1437,12 @@ function SettingsTab({ settings, setSettings, saveSettings, setEmployees, employ
   const [newIncTax,  setNewIncTax]  = useState(true);
   const [saved, setSaved] = useState(false);
 
-  const upd = (k,v) => setS(prev=>({...prev,[k]:v}));
+  const upd = (k,v) => {
+      const next = {...s,[k]:v};
+      setS(next);
+      setSettings(next);
+      if (typeof saveSettings === "function") saveSettings(next);
+    };
 
   const save = () => {
     setSettings(s);
@@ -1468,9 +1473,7 @@ function SettingsTab({ settings, setSettings, saveSettings, setEmployees, employ
     <div style={S.page}>
       <div style={S.pageHeader}>
         <h2 style={S.pageTitle}>設定</h2>
-        <button style={{...S.primaryBtn,background:saved?"#00c9a7":"linear-gradient(135deg,#6c63ff,#4ecdc4)"}} onClick={save}>
-          {saved?"✓ 保存しました":"保存する"}
-        </button>
+
       </div>
 
       {/* 会社情報 */}
