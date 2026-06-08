@@ -6,24 +6,20 @@ async function redisGet(key) {
     headers: { Authorization: `Bearer ${REDIS_TOKEN}` },
   });
   const json = await res.json();
-  // Upstashはそのまま文字列を返す → JSON.parseする
   if (json.result === null || json.result === undefined) return null;
-  try {
-    return JSON.parse(json.result);
-  } catch(e) {
-    return json.result;
-  }
+  try { return JSON.parse(json.result); }
+  catch(e) { return json.result; }
 }
 
 async function redisSet(key, value) {
-  // valueをJSON文字列にしてUpstashに保存
+  // valueをJSON文字列にしてbodyに乗せる（Upstashはbodyをそのまま値として保存）
   const res = await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${REDIS_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(JSON.stringify(value)), // Upstashは受け取った値をそのまま保存
+    body: JSON.stringify(value), // valueがオブジェクト/配列ならJSON文字列になる
   });
   return res.json();
 }
