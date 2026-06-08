@@ -706,7 +706,7 @@ export default function PayrollApp() {
     if (company) redisSet(`rakukyu:bonus:${company.id}:${m}`, next[m]);
     return next;
   });
-  const [selectedMonth, setSelectedMonth] = useState("2024-06");
+  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0,7));
   const [editingEmp,    setEditingEmp]    = useState(null);
   const [showAddModal,  setShowAddModal]  = useState(false);
   const [searchText,    setSearchText]    = useState("");
