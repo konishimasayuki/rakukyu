@@ -53,6 +53,48 @@ const DEFAULT_SETTINGS = {
 // ============================================================
 // CALC HELPERS
 // ============================================================
+// ============================================================
+// REDIS API HELPERS
+// ============================================================
+const API_BASE = "/api";
+
+async function redisGet(key) {
+  try {
+    const res = await fetch(`${API_BASE}/data?key=${encodeURIComponent(key)}`);
+    const json = await res.json();
+    return json.value;
+  } catch(e) { console.error("redisGet error:", e); return null; }
+}
+
+async function redisSet(key, value) {
+  try {
+    await fetch(`${API_BASE}/data?key=${encodeURIComponent(key)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+  } catch(e) { console.error("redisSet error:", e); }
+}
+
+async function loadCompaniesFromRedis() {
+  try {
+    const res = await fetch(`${API_BASE}/companies`);
+    const json = await res.json();
+    return json.value;
+  } catch(e) { return null; }
+}
+
+async function saveCompaniesToRedis(companies) {
+  try {
+    await fetch(`${API_BASE}/companies`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companies }),
+    });
+  } catch(e) { console.error("saveCompanies error:", e); }
+}
+
+
 const fmt = (n) => (n||0).toLocaleString("ja-JP");
 
 function calcBonusAmount(emp, bonusAmount) {
@@ -597,7 +639,18 @@ export default function PayrollApp() {
   const [loginError,    setLoginError]    = useState("");
   const [tab,           setTab]           = useState("dashboard");
   const [employees,     setEmployees]     = useState(INITIAL_EMPLOYEES);
+  const saveEmployees = useCallback((emps) => {
+    setEmployees(emps);
+    if (company) redisSet(`rakukyu:employees:${company.id}`, emps);
+  }, [company]);
   const [settings,      setSettings]      = useState(DEFAULT_SETTINGS);
+  const saveSettings = useCallback((updater) => {
+    setSettings(prev => {
+      const next = typeof updater === "function" ? updater(prev) : {...prev,...updater};
+      if (company) redisSet(`rakukyu:settings:${company.id}`, next);
+      return next;
+    });
+  }, [company]);
   const [monthlyIncentives, setMonthlyIncentives] = useState({
         "2024-06":{ 
       1:{inc_1:85000,inc_2:10000}, 
@@ -621,6 +674,13 @@ export default function PayrollApp() {
   });
   const [attendanceData, setAttendanceData] = useState(INITIAL_ATTENDANCE);
   const [yearEndData,    setYearEndData]    = useState({});  // { empId: { declarations... } }
+  const saveYearEnd = useCallback((updater) => {
+    setYearEndData(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (company) redisSet(`rakukyu:yearend:${company.id}`, next);
+      return next;
+    });
+  }, [company]);
   const [monthTransport, setMonthTransport] = useState({});   // { empId: amount } 月次通勤手当上書き
   // bonusData: { "2024-06": { payDate:"2024-06-10", data:{ 1:{bonus:300000}, ... } } }
   const [bonusData, setBonusData] = useState({
@@ -628,8 +688,16 @@ export default function PayrollApp() {
     "2024-12": { payDate:"2024-12-10", data:{ 1:{bonus:320000}, 5:{bonus:380000}, 11:{bonus:300000}, 15:{bonus:650000}, 25:{bonus:340000} } }
   });
   const getBonus  = (m) => bonusData[m]||{payDate:"",data:{}};
-  const setBonus  = (m, empId, val) => setBonusData(prev=>({...prev,[m]:{...prev[m],data:{...(prev[m]?.data||{}),[empId]:{bonus:val}}}}));
-  const setBonusPayDate = (m, date) => setBonusData(prev=>({...prev,[m]:{...(prev[m]||{data:{}}),payDate:date}}));
+  const setBonus  = (m, empId, val) => setBonusData(prev=>{
+    const next = {...prev,[m]:{...prev[m],data:{...(prev[m]?.data||{}),[empId]:{bonus:val}}}};
+    if (company) redisSet(`rakukyu:bonus:${company.id}:${m}`, next[m]);
+    return next;
+  });
+  const setBonusPayDate = (m, date) => setBonusData(prev=>{
+    const next = {...prev,[m]:{...(prev[m]||{data:{}}),payDate:date}};
+    if (company) redisSet(`rakukyu:bonus:${company.id}:${m}`, next[m]);
+    return next;
+  });
   const [selectedMonth, setSelectedMonth] = useState("2024-06");
   const [editingEmp,    setEditingEmp]    = useState(null);
   const [showAddModal,  setShowAddModal]  = useState(false);
@@ -644,19 +712,32 @@ export default function PayrollApp() {
   const refreshCount = useRef(0);
 
   const refresh = useCallback(async () => {
+    if (!company) return;
     setRefreshing(true);
     refreshCount.current += 1;
-    // ★ 本番実装時はここでAPIからデータを再取得する
-    // 例: const data = await fetch(`/api/company/${company?.id}/data`).then(r=>r.json());
-    //     setEmployees(data.employees);
-    //     setAttendanceData(data.attendance);
-    //     setMonthlyIncentives(data.incentives);
-    //     setBonusData(data.bonus);
-    //     setYearEndData(data.yearEnd);
-    // デモではstateはそのまま、タイムスタンプだけ更新
+    try {
+      const cid = company.id;
+      const [emps, sett] = await Promise.all([
+        redisGet(`rakukyu:employees:${cid}`),
+        redisGet(`rakukyu:settings:${cid}`),
+      ]);
+      if (emps)  setEmployees(emps);
+      if (sett)  setSettings(s=>({...s,...sett}));
+      // 月次データは選択中の月だけ取得
+      const [att, inc, bon, ye] = await Promise.all([
+        redisGet(`rakukyu:attendance:${cid}:${selectedMonth}`),
+        redisGet(`rakukyu:incentives:${cid}:${selectedMonth}`),
+        redisGet(`rakukyu:bonus:${cid}:${selectedMonth}`),
+        redisGet(`rakukyu:yearend:${cid}`),
+      ]);
+      if (att) setAttendanceData(prev=>({...prev,[selectedMonth]:att}));
+      if (inc) setMonthlyIncentives(prev=>({...prev,[selectedMonth]:inc}));
+      if (bon) setBonusData(prev=>({...prev,[selectedMonth]:bon}));
+      if (ye)  setYearEndData(ye);
+    } catch(e) { console.error("refresh error:", e); }
     setLastRefresh(Date.now());
-    setTimeout(()=>setRefreshing(false), 400);
-  }, [company]);
+    setRefreshing(false);
+  }, [company, selectedMonth]);
 
   // visibilitychange: 別タブから戻ってきたとき
   useEffect(()=>{
@@ -684,6 +765,10 @@ export default function PayrollApp() {
     if (loginId===SUPER_ADMIN.id && loginPw===SUPER_ADMIN.password) {
       setIsSuperAdmin(true);
       setLoginError("");
+      // Redisから会社一覧を読み込み
+      loadCompaniesFromRedis().then(cos => {
+        if (cos) setCompanies(prev=>({...prev,...cos}));
+      });
       return;
     }
     // 通常会社ログイン
@@ -692,13 +777,32 @@ export default function PayrollApp() {
       setCompany(co);
       setSettings(s=>({ ...s, companyName:co.name, companyAddress:co.address, companyTel:co.tel }));
       setLoginError("");
+      // Redisから初期データ読み込み
+      const cid = co.id;
+      Promise.all([
+        redisGet(`rakukyu:employees:${cid}`),
+        redisGet(`rakukyu:settings:${cid}`),
+        redisGet(`rakukyu:yearend:${cid}`),
+      ]).then(([emps, sett, ye]) => {
+        if (emps) setEmployees(emps);
+        if (sett) setSettings(s=>({...s,...sett,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
+        if (ye)   setYearEndData(ye);
+      });
     } else setLoginError("IDまたはパスワードが正しくありません");
   };
 
   const getMI   = (m) => monthlyIncentives[m]||{};
-  const setMI   = (m,empId,masterId,amount) => setMonthlyIncentives(prev=>({ ...prev,[m]:{ ...prev[m],[empId]:{ ...(prev[m]?.[empId]||{}),[masterId]:amount } } }));
+  const setMI   = (m,empId,masterId,amount) => setMonthlyIncentives(prev=>{
+    const next = { ...prev,[m]:{ ...prev[m],[empId]:{ ...(prev[m]?.[empId]||{}),[masterId]:amount } } };
+    if (company) redisSet(`rakukyu:incentives:${company.id}:${m}`, next[m]);
+    return next;
+  });
   const getAtt  = (m) => attendanceData[m]||{};
-  const setAtt  = (m,empId,field,val) => setAttendanceData(prev=>({ ...prev,[m]:{ ...prev[m],[empId]:{ ...(prev[m]?.[empId]||{}),[field]:val } } }));
+  const setAtt  = (m,empId,field,val) => setAttendanceData(prev=>{
+    const next = { ...prev,[m]:{ ...prev[m],[empId]:{ ...(prev[m]?.[empId]||{}),[field]:val } } };
+    if (company) redisSet(`rakukyu:attendance:${company.id}:${m}`, next[m]);
+    return next;
+  });
 
   const filteredEmployees = useMemo(()=>
     employees.filter(e=>e.name.includes(searchText)||e.department.includes(searchText)||e.nameKana.includes(searchText)),
