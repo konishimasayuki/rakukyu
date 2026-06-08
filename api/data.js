@@ -41,7 +41,20 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     try {
-      const { value } = req.body;
+      // req.bodyが未パースの場合に対応
+      let body = req.body;
+      if (typeof body === "string") {
+        body = JSON.parse(body);
+      }
+      if (!body) {
+        // 手動でbodyを読み込む
+        const chunks = [];
+        for await (const chunk of req) {
+          chunks.push(chunk);
+        }
+        body = JSON.parse(Buffer.concat(chunks).toString());
+      }
+      const { value } = body;
       await redisSet(key, JSON.stringify(value));
       return res.status(200).json({ ok: true });
     } catch(e) {
