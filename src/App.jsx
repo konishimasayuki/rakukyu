@@ -758,8 +758,9 @@ export default function PayrollApp() {
       redisGet(`rakukyu:bonus:${cid}:${selectedMonth}`),
     ]).then(([emps, sett, ye, att, inc, bon]) => {
       if (emps) setEmployees(emps);
-        if (sett) setSettings(s=>({...s,...sett}));
-        else      setSettings(s=>({...s,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
+      else if (cid !== "a") setEmployees([]);
+      if (sett) setSettings(s=>({...s,...sett}));
+      else      setSettings(s=>({...s,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
       if (ye)   setYearEndData(ye);
       if (att)  setAttendanceData(prev=>({...prev,[selectedMonth]:att}));
       if (inc)  setMonthlyIncentives(prev=>({...prev,[selectedMonth]:inc}));
@@ -826,6 +827,7 @@ export default function PayrollApp() {
         redisGet(`rakukyu:bonus:${cid}:${selectedMonth}`),
       ]).then(([emps, sett, ye, att, inc, bon]) => {
         if (emps) setEmployees(emps);
+        else if (cid !== "a") setEmployees([]); // a以外は空スタート
         // Redisの設定を優先、なければCOMPANIESのデフォルト値
         if (sett) setSettings(s=>({...s,...sett}));
         else      setSettings(s=>({...s,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
