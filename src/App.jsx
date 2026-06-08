@@ -1261,7 +1261,7 @@ function SuperAdminScreen({ companies, setCompanies, onLogout }) {
     setTimeout(()=>setMsg(""),3000);
   };
 
-  const coList = Object.values(companies);
+  const coList = companies ? Object.values(companies).filter(Boolean) : [];
 
   return (
     <div style={{minHeight:"100vh",background:"#0f0f1a",display:"flex",flexDirection:"column",alignItems:"center",padding:"32px 16px"}}>
@@ -1299,7 +1299,7 @@ function SuperAdminScreen({ companies, setCompanies, onLogout }) {
                 <td style={{padding:"10px 12px",color:"white",fontSize:13,fontWeight:600}}>{co.name}</td>
                 <td style={{padding:"10px 12px",color:"#888",fontSize:11}}>{co.address||"—"}</td>
                 <td style={{padding:"10px 12px",color:"#888",fontSize:11}}>{co.tel||"—"}</td>
-                <td style={{padding:"10px 12px",color:"#555",fontSize:12,fontFamily:"monospace"}}>{"•".repeat(Math.min(co.password.length,8))}</td>
+                <td style={{padding:"10px 12px",color:"#555",fontSize:12,fontFamily:"monospace"}}>{"•".repeat(Math.min((co.password||"").length,8))}</td>
                 <td style={{padding:"10px 12px",display:"flex",gap:6}}>
                   <button style={{background:"none",border:"1px solid #444",borderRadius:6,color:"#aaa",fontSize:11,cursor:"pointer",padding:"4px 10px"}}
                     onClick={()=>handleEdit(co)}>編集</button>
