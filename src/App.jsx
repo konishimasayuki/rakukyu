@@ -913,7 +913,7 @@ export default function PayrollApp() {
   if (!company && !isSuperAdmin) return <LoginScreen loginId={loginId} setLoginId={setLoginId} loginPw={loginPw} setLoginPw={setLoginPw} loginError={loginError} onLogin={handleLogin}/>;
   if (isSuperAdmin) return <SuperAdminScreen companies={companies} setCompanies={setCompanies} onLogout={()=>{setIsSuperAdmin(false);setLoginId("");setLoginPw("");localStorage.removeItem("rakukyu_session");}} />;
 
-  const cp = { employees, settings, setSettings, saveSettings, monthlyIncentives, getMI, setMI, attendanceData, getAtt, setAtt, yearEndData, setYearEndData, saveYearEnd, selectedMonth, setSelectedMonth, company, monthTransport, setMonthTransport, bonusData, getBonus, setBonus, setBonusPayDate, timecards, getTC, addTC, updateTC, deleteTC };
+  const cp = { employees, settings, setSettings, saveSettings, monthlyIncentives, getMI, setMI, attendanceData, getAtt, setAtt, yearEndData, setYearEndData, saveYearEnd, selectedMonth, setSelectedMonth, company, monthTransport, setMonthTransport, bonusData, getBonus, setBonus, setBonusPayDate, timecards, setTimecards, getTC, addTC, updateTC, deleteTC };
 
   const TABS = [
     { id:"dashboard",  icon:"▪", label:"ダッシュボード" },
@@ -990,7 +990,7 @@ export default function PayrollApp() {
           {tab==="withholding"&& <WithholdingTax {...cp}/>}
           {tab==="yearend"    && <YearEndAdj   {...cp} getBonus={getBonus} employees={employees}/> }
           {tab==="settings"   && <SettingsTab  {...cp} setEmployees={saveEmployees}/>}
-          {tab==="timecard"   && <TimecardTab  {...cp}/>}
+          {tab==="timecard"   && <TimecardTab  {...cp} setTimecards={setTimecards}/>}
         </main>
       </div>
 
@@ -3257,10 +3257,24 @@ function WithholdingTax({ employees, settings, getMI, getAtt, selectedMonth, set
 // ============================================================
 // TIMECARD TAB（管理者用打刻履歴・編集）
 // ============================================================
-function TimecardTab({ employees, settings, selectedMonth, setSelectedMonth, getTC, updateTC, deleteTC, getAtt, setAtt }) {
+function TimecardTab({ employees, settings, selectedMonth, setSelectedMonth, getTC, updateTC, deleteTC, getAtt, setAtt, company, timecards, setTimecards }) {
   const [selectedEmp, setSelectedEmp] = useState(null);
   const [editIdx,     setEditIdx]     = useState(null);
   const [editForm,    setEditForm]    = useState({});
+  const [loading,     setLoading]     = useState(false);
+
+  // タブを開くたびにRedisから最新データを取得
+  useEffect(()=>{
+    if (!company) return;
+    setLoading(true);
+    redisGet(`rakukyu:timecards:${company.id}:${selectedMonth}`)
+      .then(data=>{
+        if (data) {
+          setTimecards(prev=>({...prev,[selectedMonth]:data}));
+        }
+      })
+      .finally(()=>setLoading(false));
+  }, [company, selectedMonth]);
 
   const STAMP_TYPES = [
     { id:"in",        label:"出勤"  },
