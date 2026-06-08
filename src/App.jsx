@@ -763,11 +763,14 @@ export default function PayrollApp() {
   const handleLogin = () => {
     // スーパー管理者チェック
     if (loginId===SUPER_ADMIN.id && loginPw===SUPER_ADMIN.password) {
-      setIsSuperAdmin(true);
       setLoginError("");
-      // Redisから会社一覧を読み込み
+      // Redisから会社一覧を読み込んでからスーパー管理者画面へ
       loadCompaniesFromRedis().then(cos => {
-        if (cos) setCompanies(prev=>({...prev,...cos}));
+        if (cos && Object.keys(cos).length > 0) {
+          setCompanies(cos); // Redisの内容で上書き
+        }
+        // 読み込み完了後にスーパー管理者モードに切り替え
+        setIsSuperAdmin(true);
       });
       return;
     }
