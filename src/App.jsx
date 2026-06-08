@@ -819,7 +819,7 @@ export default function PayrollApp() {
   if (!company && !isSuperAdmin) return <LoginScreen loginId={loginId} setLoginId={setLoginId} loginPw={loginPw} setLoginPw={setLoginPw} loginError={loginError} onLogin={handleLogin}/>;
   if (isSuperAdmin) return <SuperAdminScreen companies={companies} setCompanies={setCompanies} onLogout={()=>{setIsSuperAdmin(false);setLoginId("");setLoginPw("");}} />;
 
-  const cp = { employees, settings, setSettings, monthlyIncentives, getMI, setMI, attendanceData, getAtt, setAtt, yearEndData, setYearEndData, selectedMonth, setSelectedMonth, company, monthTransport, setMonthTransport, bonusData, getBonus, setBonus, setBonusPayDate };
+  const cp = { employees, settings, setSettings, saveSettings, monthlyIncentives, getMI, setMI, attendanceData, getAtt, setAtt, yearEndData, setYearEndData, saveYearEnd, selectedMonth, setSelectedMonth, company, monthTransport, setMonthTransport, bonusData, getBonus, setBonus, setBonusPayDate };
 
   const TABS = [
     { id:"dashboard",  icon:"▪", label:"ダッシュボード" },
@@ -885,7 +885,7 @@ export default function PayrollApp() {
 
         <main style={S.main}>
           {tab==="dashboard"  && <Dashboard  stats={dashStats} {...cp}/>}
-          {tab==="employees"  && <EmployeeList employees={employees} searchText={searchText} setSearchText={setSearchText} onEdit={setEditingEmp} onAdd={()=>setShowAddModal(true)} onDelete={id=>setEmployees(prev=>prev.filter(e=>e.id!==id))} settings={settings}/>}
+          {tab==="employees"  && <EmployeeList employees={employees} searchText={searchText} setSearchText={setSearchText} onEdit={setEditingEmp} onAdd={()=>setShowAddModal(true)} onDelete={id=>saveEmployees(employees.filter(e=>e.id!==id))} settings={settings}/>}
           {tab==="attendance" && <AttendanceTab {...cp}/>}
           {tab==="payroll"    && <PayrollCalc  {...cp}/>}
           {tab==="payslip"    && <PayslipView  {...cp} onPrint={printPayslip}/>}
@@ -894,12 +894,12 @@ export default function PayrollApp() {
           {tab==="ledger"     && <LedgerView   {...cp} getBonus={getBonus} onPrint={printLedger}/> }
           {tab==="withholding"&& <WithholdingTax {...cp}/>}
           {tab==="yearend"    && <YearEndAdj   {...cp} getBonus={getBonus} employees={employees}/> }
-          {tab==="settings"   && <SettingsTab  {...cp} setEmployees={setEmployees}/>}
+          {tab==="settings"   && <SettingsTab  {...cp} setEmployees={saveEmployees}/>}
         </main>
       </div>
 
-      {editingEmp  && <EmployeeModal emp={editingEmp}  settings={settings} onSave={u=>{setEmployees(prev=>prev.map(e=>e.id===u.id?u:e));setEditingEmp(null);}}  onClose={()=>setEditingEmp(null)}/>}
-      {showAddModal && <EmployeeModal emp={null} settings={settings} onSave={n=>{setEmployees(prev=>[...prev,{...n,id:Date.now()}]);setShowAddModal(false);}} onClose={()=>setShowAddModal(false)}/>}
+      {editingEmp  && <EmployeeModal emp={editingEmp}  settings={settings} onSave={u=>{saveEmployees(employees.map(e=>e.id===u.id?u:e));setEditingEmp(null);}}  onClose={()=>setEditingEmp(null)}/>}
+      {showAddModal && <EmployeeModal emp={null} settings={settings} onSave={n=>{saveEmployees([...employees,{...n,id:Date.now()}]);setShowAddModal(false);}} onClose={()=>setShowAddModal(false)}/>}
     </div>
   );
 }
@@ -1215,7 +1215,11 @@ function SuperAdminScreen({ companies, setCompanies, onLogout }) {
   const handleAdd = () => {
     if (!form.id || !form.name || !form.password) { setMsg("会社ID・会社名・パスワードは必須です"); return; }
     if (companies[form.id]) { setMsg("この会社IDは既に使われています"); return; }
-    setCompanies(prev=>({...prev,[form.id]:{ id:form.id, name:form.name, address:form.address, tel:form.tel, password:form.password }}));
+    setCompanies(prev=>{
+      const next={...prev,[form.id]:{ id:form.id, name:form.name, address:form.address, tel:form.tel, password:form.password }};
+      saveCompaniesToRedis(next);
+      return next;
+    });
     setForm({ id:"", name:"", address:"", tel:"", password:"" });
     setShowAddForm(false);
     setMsg(`「${form.name}」を追加しました`);
@@ -1230,7 +1234,11 @@ function SuperAdminScreen({ companies, setCompanies, onLogout }) {
 
   const handleUpdate = () => {
     if (!form.name || !form.password) { setMsg("会社名・パスワードは必須です"); return; }
-    setCompanies(prev=>({...prev,[editId]:{ ...prev[editId], name:form.name, address:form.address, tel:form.tel, password:form.password }}));
+    setCompanies(prev=>{
+      const next={...prev,[editId]:{ ...prev[editId], name:form.name, address:form.address, tel:form.tel, password:form.password }};
+      saveCompaniesToRedis(next);
+      return next;
+    });
     setEditId(null);
     setMsg("更新しました");
     setTimeout(()=>setMsg(""),3000);
@@ -1238,7 +1246,11 @@ function SuperAdminScreen({ companies, setCompanies, onLogout }) {
 
   const handleDelete = (id) => {
     if (!window.confirm(`「${companies[id].name}」を削除しますか？`)) return;
-    setCompanies(prev=>{ const n={...prev}; delete n[id]; return n; });
+    setCompanies(prev=>{
+      const n={...prev}; delete n[id];
+      saveCompaniesToRedis(n);
+      return n;
+    });
     setMsg("削除しました");
     setTimeout(()=>setMsg(""),3000);
   };
@@ -1362,7 +1374,7 @@ function LoginScreen({ loginId,setLoginId,loginPw,setLoginPw,loginError,onLogin 
 // ============================================================
 // SETTINGS TAB
 // ============================================================
-function SettingsTab({ settings, setSettings, setEmployees, employees }) {
+function SettingsTab({ settings, setSettings, saveSettings, setEmployees, employees }) {
   const [s, setS] = useState(settings);
   const [newDept,    setNewDept]    = useState("");
   const [newIncName, setNewIncName] = useState("");
@@ -2982,7 +2994,7 @@ function calcFinalTax(nenZei) {
   return Math.floor(nenZei * 1.021);
 }
 
-function YearEndAdj({ employees, settings, getMI, getAtt, getBonus, yearEndData, setYearEndData }) {
+function YearEndAdj({ employees, settings, getMI, getAtt, getBonus, yearEndData, setYearEndData, saveYearEnd }) {
   const [selectedYear, setSelectedYear] = useState("2024");
   const [selectedEmpId, setSelectedEmpId] = useState(employees[0]?.id || null);
   const [view, setView] = useState("list"); // list | input | result
