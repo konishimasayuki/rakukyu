@@ -1,12 +1,24 @@
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-async function redis(cmd, ...args) {
-  const res = await fetch(`${REDIS_URL}/${[cmd, ...args].map(encodeURIComponent).join("/")}`, {
+async function redisGet(key) {
+  const res = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, {
     headers: { Authorization: `Bearer ${REDIS_TOKEN}` },
   });
   const json = await res.json();
   return json.result;
+}
+
+async function redisSet(key, value) {
+  const res = await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${REDIS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(value),
+  });
+  return res.json();
 }
 
 export default async function handler(req, res) {
@@ -19,14 +31,22 @@ export default async function handler(req, res) {
   if (!key) return res.status(400).json({ error: "key is required" });
 
   if (req.method === "GET") {
-    const val = await redis("GET", key);
-    return res.status(200).json({ value: val ? JSON.parse(val) : null });
+    try {
+      const val = await redisGet(key);
+      return res.status(200).json({ value: val ? JSON.parse(val) : null });
+    } catch(e) {
+      return res.status(500).json({ error: e.message });
+    }
   }
 
   if (req.method === "POST") {
-    const { value } = req.body;
-    await redis("SET", key, JSON.stringify(value));
-    return res.status(200).json({ ok: true });
+    try {
+      const { value } = req.body;
+      await redisSet(key, JSON.stringify(value));
+      return res.status(200).json({ ok: true });
+    } catch(e) {
+      return res.status(500).json({ error: e.message });
+    }
   }
 
   return res.status(405).json({ error: "Method not allowed" });
