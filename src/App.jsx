@@ -765,13 +765,16 @@ export default function PayrollApp() {
     if (loginId===SUPER_ADMIN.id && loginPw===SUPER_ADMIN.password) {
       setLoginError("");
       // Redisから会社一覧を読み込んでからスーパー管理者画面へ
-      loadCompaniesFromRedis().then(cos => {
-        if (cos && Object.keys(cos).length > 0) {
-          setCompanies(cos); // Redisの内容で上書き
-        }
-        // 読み込み完了後にスーパー管理者モードに切り替え
-        setIsSuperAdmin(true);
-      });
+      loadCompaniesFromRedis()
+        .then(cos => {
+          if (cos && Object.keys(cos).length > 0) {
+            setCompanies(cos);
+          }
+        })
+        .catch(e => console.error("load companies error:", e))
+        .finally(() => {
+          setIsSuperAdmin(true);
+        });
       return;
     }
     // 通常会社ログイン
