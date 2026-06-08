@@ -1357,7 +1357,7 @@ function KintaiScreen({ companies, employees, addTC }) {
     const next = pinInput + k;
     setPinInput(next);
     if (next.length===4) {
-      const e = (employees||[]).find(emp=>String(emp.code||emp.id)===empNo && emp.pin===next);
+      const e = (employees||[]).find(emp=>String(emp.code||emp.id).replace(/[^0-9]/g,"")===empNo && emp.pin===next);
       if (e) {
         const todayLog = [];
         setEmp(e); setPinError(false); setLog(todayLog);
