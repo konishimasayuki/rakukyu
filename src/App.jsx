@@ -39,7 +39,10 @@ const DEFAULT_SETTINGS = {
   lateNightRate:    1.50,   // 深夜残業率
   holidayRate:      1.35,   // 休日残業率
   payTypes: ["月給制","日給月給制","日給制","時間給制"],  // 使用する支給形態
-  withholdingPayType: "monthly",  // monthly=毎月納付 / special=納期特例（半年）
+  withholdingPayType: "monthly",  // monthly=毎月納付 / special=納期
+  kintaiLat:  null,   // 打刻GPS緯度
+  kintaiLng:  null,   // 打刻GPS経度
+  kintaiRange: 300,   // 許容範囲(m)特例（半年）
   departments: ["営業部","整備部","管理部","受付","経営"],
   incentiveMasters: [
     { id:"inc_1", name:"営業インセンティブ", taxable:true },
@@ -855,6 +858,34 @@ export default function PayrollApp() {
     return next;
   });
 
+  // 打刻データ
+  const [timecards, setTimecards] = useState({});  // { month: { empId: [{type,time,reason,lat,lng}] } }
+  const getTC = (m) => timecards[m]||{};
+  const addTC = (m, empId, entry) => {
+    setTimecards(prev=>{
+      const next = { ...prev,[m]:{ ...prev[m],[empId]:[...(prev[m]?.[empId]||[]),entry] } };
+      if (company) redisSet(`rakukyu:timecards:${company.id}:${m}`, next[m]);
+      return next;
+    });
+  };
+  const updateTC = (m, empId, idx, entry) => {
+    setTimecards(prev=>{
+      const empLog = [...(prev[m]?.[empId]||[])];
+      empLog[idx] = entry;
+      const next = { ...prev,[m]:{ ...prev[m],[empId]:empLog } };
+      if (company) redisSet(`rakukyu:timecards:${company.id}:${m}`, next[m]);
+      return next;
+    });
+  };
+  const deleteTC = (m, empId, idx) => {
+    setTimecards(prev=>{
+      const empLog = (prev[m]?.[empId]||[]).filter((_,i)=>i!==idx);
+      const next = { ...prev,[m]:{ ...prev[m],[empId]:empLog } };
+      if (company) redisSet(`rakukyu:timecards:${company.id}:${m}`, next[m]);
+      return next;
+    });
+  };
+
   const filteredEmployees = useMemo(()=>
     employees.filter(e=>e.name.includes(searchText)||e.department.includes(searchText)||e.nameKana.includes(searchText)),
     [employees,searchText]);
@@ -867,6 +898,10 @@ export default function PayrollApp() {
     },{gross:0,net:0,incentive:0});
   },[employees,selectedMonth,settings,monthlyIncentives,attendanceData]);
 
+  // /kintai ルート判定
+  const isKintai = typeof window !== "undefined" && window.location.pathname.startsWith("/kintai");
+  if (isKintai) return <KintaiScreen companies={companies} employees={employees} addTC={addTC} />;
+
   if (loading) return (
     <div style={{minHeight:"100vh",background:"#0f0f1a",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
       <div style={{width:40,height:40,border:"4px solid #333",borderTop:"4px solid #6c63ff",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
@@ -878,7 +913,7 @@ export default function PayrollApp() {
   if (!company && !isSuperAdmin) return <LoginScreen loginId={loginId} setLoginId={setLoginId} loginPw={loginPw} setLoginPw={setLoginPw} loginError={loginError} onLogin={handleLogin}/>;
   if (isSuperAdmin) return <SuperAdminScreen companies={companies} setCompanies={setCompanies} onLogout={()=>{setIsSuperAdmin(false);setLoginId("");setLoginPw("");localStorage.removeItem("rakukyu_session");}} />;
 
-  const cp = { employees, settings, setSettings, saveSettings, monthlyIncentives, getMI, setMI, attendanceData, getAtt, setAtt, yearEndData, setYearEndData, saveYearEnd, selectedMonth, setSelectedMonth, company, monthTransport, setMonthTransport, bonusData, getBonus, setBonus, setBonusPayDate };
+  const cp = { employees, settings, setSettings, saveSettings, monthlyIncentives, getMI, setMI, attendanceData, getAtt, setAtt, yearEndData, setYearEndData, saveYearEnd, selectedMonth, setSelectedMonth, company, monthTransport, setMonthTransport, bonusData, getBonus, setBonus, setBonusPayDate, timecards, getTC, addTC, updateTC, deleteTC };
 
   const TABS = [
     { id:"dashboard",  icon:"▪", label:"ダッシュボード" },
@@ -892,6 +927,7 @@ export default function PayrollApp() {
     { id:"withholding",icon:"🏛", label:"源泉管理" },
     { id:"yearend",    icon:"📝", label:"年末調整" },
     { id:"settings",   icon:"⚙", label:"設定" },
+    { id:"timecard",    icon:"🕐", label:"タイムカード" },
   ];
 
   const selectTab = (id) => { setTab(id); setSidebarOpen(false); refresh(); };
@@ -954,6 +990,7 @@ export default function PayrollApp() {
           {tab==="withholding"&& <WithholdingTax {...cp}/>}
           {tab==="yearend"    && <YearEndAdj   {...cp} getBonus={getBonus} employees={employees}/> }
           {tab==="settings"   && <SettingsTab  {...cp} setEmployees={saveEmployees}/>}
+          {tab==="timecard"   && <TimecardTab  {...cp}/>}
         </main>
       </div>
 
@@ -1260,6 +1297,302 @@ function MobileCSS() {
 // ============================================================
 // LOGIN
 // ============================================================
+
+// ============================================================
+// KINTAI SCREEN（/kintai ルート）
+// ============================================================
+function KintaiScreen({ companies, employees, addTC }) {
+  const ORANGE = "#FF6B2B";
+  const saved = (() => { try { return JSON.parse(localStorage.getItem("kintai_session")||"null"); } catch { return null; } })();
+
+  const [screen,     setScreen]     = useState(saved?.screen || "company");
+  const [companyId,  setCompanyId]  = useState("");
+  const [empNo,      setEmpNo]      = useState("");
+  const [pinInput,   setPinInput]   = useState("");
+  const [pinError,   setPinError]   = useState(false);
+  const [company,    setCompany]    = useState(saved?.company || null);
+  const [emp,        setEmp]        = useState(saved?.emp || null);
+  const [time,       setTime]       = useState(new Date());
+  const [stamping,   setStamping]   = useState(null);
+  const [reason,     setReason]     = useState("");
+  const [showReason, setShowReason] = useState(false);
+  const [doneType,   setDoneType]   = useState(null);
+  const [log,        setLog]        = useState(saved?.log || []);
+  const [locErr,     setLocErr]     = useState(null);
+
+  useEffect(() => { const t = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(t); }, []);
+
+  const fmt     = (d) => d.toLocaleTimeString("ja-JP", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  const fmtDate = (d) => d.toLocaleDateString("ja-JP", { year:"numeric", month:"long", day:"numeric", weekday:"short" });
+  const fmtNow  = () => new Date().toLocaleTimeString("ja-JP", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  const monthKey= () => new Date().toISOString().slice(0,7);
+
+  const saveSession = (data) => localStorage.setItem("kintai_session", JSON.stringify(data));
+
+  const STAMP_TYPES = [
+    { id:"in",        label:"出　勤", icon:"▶", color:"#FF6B2B" },
+    { id:"out",       label:"退　勤", icon:"■", color:"#E53935" },
+    { id:"break_out", label:"休憩出", icon:"◐", color:"#F59F00" },
+    { id:"break_in",  label:"休憩戻", icon:"◑", color:"#2196F3" },
+  ];
+  const LOG_COLOR = { in:"#FF6B2B", out:"#E53935", break_out:"#F59F00", break_in:"#2196F3" };
+
+  const getDistance = (lat1,lon1,lat2,lon2) => {
+    const R = 6371000;
+    const dLat = (lat2-lat1)*Math.PI/180;
+    const dLon = (lon2-lon1)*Math.PI/180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  };
+
+  const handleCompany = () => {
+    if (!companyId.trim()) return;
+    const co = Object.values(companies||{}).find(c=>c.id===companyId.trim());
+    if (!co) { setLocErr("会社IDが見つかりません"); return; }
+    setCompany(co); setLocErr(null); setScreen("pin");
+  };
+
+  const handlePinKey = (k) => {
+    if (k==="del") { setPinInput(p=>p.slice(0,-1)); return; }
+    const next = pinInput + k;
+    setPinInput(next);
+    if (next.length===4) {
+      const e = (employees||[]).find(emp=>String(emp.code||emp.id)===empNo && emp.pin===next);
+      if (e) {
+        const todayLog = [];
+        setEmp(e); setPinError(false); setLog(todayLog);
+        setScreen("stamp");
+        saveSession({ screen:"stamp", company, emp:e, log:todayLog });
+      } else {
+        setPinError(true);
+        setTimeout(()=>{ setPinInput(""); setPinError(false); }, 800);
+      }
+    }
+  };
+
+  const handleStamp = (type) => {
+    setStamping(type);
+    if (!navigator.geolocation) { doStamp(type, null, null, null); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude:lat, longitude:lng } = pos.coords;
+        const co = company;
+        const settLat = co?.kintaiLat;
+        const settLng = co?.kintaiLng;
+        const range   = co?.kintaiRange || 300;
+        if (settLat && settLng) {
+          const dist = getDistance(lat, lng, settLat, settLng);
+          if (dist > range) { setShowReason(true); return; }
+        }
+        doStamp(type, null, lat, lng);
+      },
+      () => doStamp(type, null, null, null)
+    );
+  };
+
+  const doStamp = (type, reasonText, lat, lng) => {
+    setShowReason(false); setStamping(null); setReason("");
+    const t = STAMP_TYPES.find(x=>x.id===type);
+    const entry = { type, time:fmtNow(), label:t.label, reason:reasonText||null, lat, lng, date:new Date().toISOString().slice(0,10) };
+    const newLog = [...log, entry];
+    setLog(newLog);
+    setDoneType(type);
+    setScreen("done");
+    saveSession({ screen:"stamp", company, emp, log:newLog });
+    // 楽給のtimecardに追加
+    if (typeof addTC === "function") addTC(monthKey(), emp.id, entry);
+    setTimeout(()=>{ setScreen("stamp"); setDoneType(null); }, 2500);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("kintai_session");
+    setScreen("company"); setEmp(null); setCompany(null);
+    setPinInput(""); setEmpNo(""); setLog([]);
+  };
+
+  const S = {
+    root:       { minHeight:"100vh", background:"white", display:"flex", flexDirection:"column", alignItems:"center", paddingBottom:40, fontFamily:"'Hiragino Kaku Gothic Pro','Noto Sans JP',sans-serif" },
+    topBar:     { width:"100%", background:ORANGE, padding:"14px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", boxSizing:"border-box", boxShadow:"0 2px 12px rgba(255,107,43,0.3)" },
+    topLogo:    { fontSize:18, fontWeight:900, color:"white" },
+    topCo:      { fontSize:12, color:"rgba(255,255,255,0.85)", marginTop:1 },
+    topLogout:  { fontSize:12, color:"rgba(255,255,255,0.8)", background:"rgba(255,255,255,0.15)", border:"none", borderRadius:8, padding:"6px 12px", cursor:"pointer" },
+    timeBlock:  { width:"100%", background:"#FFF5F0", padding:"24px 20px 20px", textAlign:"center", borderBottom:`3px solid ${ORANGE}22` },
+    timeNum:    { fontSize:60, fontWeight:200, color:"#1A1A1A", letterSpacing:"0.05em", lineHeight:1, fontVariantNumeric:"tabular-nums" },
+    timeDate:   { fontSize:13, color:"#888", marginTop:6 },
+    empBlock:   { width:"100%", maxWidth:400, padding:"16px 20px", display:"flex", alignItems:"center", gap:12, boxSizing:"border-box", borderBottom:"1px solid #F0F0F0" },
+    empAvatar:  { width:44, height:44, borderRadius:"50%", background:`linear-gradient(135deg,${ORANGE},#FF8C5A)`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, color:"white", fontWeight:700, flexShrink:0 },
+    empName:    { fontSize:16, color:"#1A1A1A", fontWeight:700 },
+    empKana:    { fontSize:11, color:"#888", marginTop:1 },
+    stamps:     { width:"100%", maxWidth:400, padding:"20px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, boxSizing:"border-box" },
+    stampBtn:   (color,active)=>({ padding:"22px 12px", borderRadius:16, border:`2px solid ${active?color:color+"44"}`, background:active?color+"15":"white", cursor:"pointer", textAlign:"center", boxShadow:active?`0 4px 20px ${color}33`:"0 2px 8px rgba(0,0,0,0.06)", transition:"all 0.15s" }),
+    stampIcon:  (color)=>({ fontSize:24, color, marginBottom:8, display:"block" }),
+    stampLabel: (color)=>({ fontSize:15, color, fontWeight:700, letterSpacing:"0.1em" }),
+    reasonBox:  { width:"100%", maxWidth:400, padding:"0 20px", boxSizing:"border-box" },
+    reasonCard: { background:"#FFF5F5", border:"1.5px solid #E5393533", borderRadius:14, padding:16, marginBottom:16 },
+    reasonTitle:{ fontSize:13, color:"#E53935", fontWeight:700, marginBottom:10 },
+    reasonInput:{ width:"100%", padding:"10px 12px", background:"white", border:"1px solid #DDD", borderRadius:10, color:"#1A1A1A", fontSize:14, outline:"none", resize:"none", boxSizing:"border-box" },
+    reasonBtns: { display:"flex", gap:8, marginTop:10 },
+    reasonOk:   { flex:1, padding:"11px", background:"#E53935", border:"none", borderRadius:10, color:"white", fontSize:14, fontWeight:700, cursor:"pointer" },
+    reasonCancel:{ flex:1, padding:"11px", background:"white", border:"1.5px solid #DDD", borderRadius:10, color:"#888", fontSize:14, cursor:"pointer" },
+    logSection: { width:"100%", maxWidth:400, padding:"0 20px", boxSizing:"border-box", marginTop:4 },
+    logTitle:   { fontSize:13, color:"#888", fontWeight:600, marginBottom:10, display:"flex", alignItems:"center", gap:6 },
+    logCard:    { background:"#F5F5F7", borderRadius:14, overflow:"hidden" },
+    logRow:     { display:"flex", alignItems:"center", padding:"11px 14px", borderBottom:"1px solid white", gap:10 },
+    logDot:     (color)=>({ width:8, height:8, borderRadius:"50%", background:color, flexShrink:0 }),
+    logLabel:   { fontSize:14, color:"#1A1A1A", fontWeight:600, minWidth:52 },
+    logTime:    { fontSize:13, color:"#888", marginLeft:"auto" },
+    logNote:    { fontSize:11, color:"#F59F00", marginLeft:4 },
+    logEmpty:   { padding:"16px", textAlign:"center", color:"#888", fontSize:13 },
+    loginRoot:  { minHeight:"100vh", background:"white", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"20px" },
+    loginCard:  { width:"100%", maxWidth:360, background:"white", borderRadius:24, boxShadow:"0 4px 40px rgba(0,0,0,0.10)", padding:"36px 28px", border:"1px solid #F0F0F0" },
+    bigLogo:    { fontSize:42, fontWeight:900, color:ORANGE, letterSpacing:"0.05em", textAlign:"center", marginBottom:4 },
+    logoSub:    { fontSize:14, color:"#888", textAlign:"center", marginBottom:32 },
+    inputWrap:  { marginBottom:16 },
+    inputLabel: { fontSize:12, color:"#888", marginBottom:6, display:"block" },
+    inp:        { width:"100%", padding:"13px 16px", background:"#F5F5F7", border:"1.5px solid transparent", borderRadius:12, color:"#1A1A1A", fontSize:15, outline:"none", boxSizing:"border-box" },
+    primaryBtn: { width:"100%", padding:"14px", background:ORANGE, border:"none", borderRadius:12, color:"white", fontSize:15, fontWeight:700, cursor:"pointer", boxShadow:`0 4px 16px ${ORANGE}44`, letterSpacing:"0.05em" },
+    errMsg:     { color:"#E53935", fontSize:13, textAlign:"center", marginTop:10 },
+    pinRoot:    { minHeight:"100vh", background:"white", display:"flex", flexDirection:"column", alignItems:"center" },
+    pinHeader:  { width:"100%", background:ORANGE, padding:"16px 20px", boxSizing:"border-box", boxShadow:"0 2px 12px rgba(255,107,43,0.3)" },
+    pinTitle:   { fontSize:18, fontWeight:900, color:"white" },
+    pinCo:      { fontSize:12, color:"rgba(255,255,255,0.85)", marginTop:1 },
+    pinCard:    { width:"100%", maxWidth:360, padding:"28px 24px 0", boxSizing:"border-box" },
+    pinDots:    (err)=>({ display:"flex", gap:14, justifyContent:"center", marginBottom:28, marginTop:20, filter:err?"hue-rotate(200deg)":"none", transition:"filter 0.2s" }),
+    dot:        (filled)=>({ width:16, height:16, borderRadius:"50%", background:filled?ORANGE:"#E0E0E0", transition:"background 0.15s", boxShadow:filled?`0 0 8px ${ORANGE}88`:"none" }),
+    numpad:     { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, padding:"0 24px 24px", width:"100%", maxWidth:360, boxSizing:"border-box" },
+    numBtn:     { padding:"18px", background:"#F5F5F7", border:"none", borderRadius:14, color:"#1A1A1A", fontSize:22, fontWeight:400, cursor:"pointer", textAlign:"center" },
+    backBtn:    { width:"calc(100% - 48px)", margin:"0 24px 24px", padding:"13px", background:"white", border:"1.5px solid #E0E0E0", borderRadius:12, color:"#888", fontSize:14, cursor:"pointer" },
+    doneRoot:   { minHeight:"100vh", background:"white", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 },
+    doneIcon:   (color)=>({ fontSize:72, color, marginBottom:16, display:"block", textAlign:"center" }),
+    doneLabel:  { fontSize:26, color:"#1A1A1A", fontWeight:800, textAlign:"center", marginBottom:8 },
+    doneTime:   { fontSize:14, color:"#888", textAlign:"center" },
+  };
+
+  if (screen==="done") {
+    const t = STAMP_TYPES.find(x=>x.id===doneType);
+    return (
+      <div style={S.doneRoot}>
+        <div style={S.doneIcon(t.color)}>✓</div>
+        <div style={S.doneLabel}>{t.label}しました</div>
+        <div style={S.doneTime}>{fmtDate(time)}　{fmt(time)}</div>
+        <div style={{fontSize:12,color:"#CCC",marginTop:24}}>2.5秒後に戻ります...</div>
+      </div>
+    );
+  }
+
+  if (screen==="stamp") {
+    return (
+      <div style={S.root}>
+        <div style={S.topBar}>
+          <div>
+            <div style={S.topLogo}>楽給.com</div>
+            <div style={S.topCo}>{company?.name}</div>
+          </div>
+          <button style={S.topLogout} onClick={handleLogout}>ログアウト</button>
+        </div>
+        <div style={S.timeBlock}>
+          <div style={S.timeNum}>{fmt(time)}</div>
+          <div style={S.timeDate}>{fmtDate(time)}</div>
+        </div>
+        <div style={S.empBlock}>
+          <div style={S.empAvatar}>{emp?.name?.[0]}</div>
+          <div>
+            <div style={S.empName}>{emp?.name}</div>
+            <div style={S.empKana}>{emp?.nameKana}</div>
+          </div>
+        </div>
+        {showReason && (
+          <div style={S.reasonBox}>
+            <div style={S.reasonCard}>
+              <div style={S.reasonTitle}>⚠ 勤務地から離れています（{company?.kintaiRange||300}m超）</div>
+              <textarea style={S.reasonInput} rows={3}
+                placeholder="理由を入力してください（例：テレワーク、外出先など）"
+                value={reason} onChange={e=>setReason(e.target.value)}/>
+              <div style={S.reasonBtns}>
+                <button style={S.reasonCancel} onClick={()=>{setShowReason(false);setStamping(null);setReason("");}}>キャンセル</button>
+                <button style={{...S.reasonOk,opacity:reason.trim()?1:0.4}} onClick={()=>reason.trim()&&doStamp(stamping,reason,null,null)}>この理由で打刻</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {!showReason && (
+          <div style={S.stamps}>
+            {STAMP_TYPES.map(t=>(
+              <button key={t.id} style={S.stampBtn(t.color,stamping===t.id)} onClick={()=>handleStamp(t.id)}>
+                <span style={S.stampIcon(t.color)}>{t.icon}</span>
+                <span style={S.stampLabel(t.color)}>{t.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={S.logSection}>
+          <div style={S.logTitle}><span>📋</span> 本日の打刻記録</div>
+          <div style={S.logCard}>
+            {log.length===0
+              ? <div style={S.logEmpty}>まだ打刻がありません</div>
+              : log.map((entry,i)=>(
+                <div key={i} style={S.logRow}>
+                  <div style={S.logDot(LOG_COLOR[entry.type])}/>
+                  <span style={S.logLabel}>{entry.label}</span>
+                  {entry.reason && <span style={S.logNote}>📍{entry.reason}</span>}
+                  <span style={S.logTime}>{entry.time}</span>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen==="pin") {
+    return (
+      <div style={S.pinRoot}>
+        <div style={S.pinHeader}>
+          <div style={S.pinTitle}>楽給.com 打刻</div>
+          <div style={S.pinCo}>{company?.name}</div>
+        </div>
+        <div style={S.pinCard}>
+          <div style={S.inputWrap}>
+            <label style={S.inputLabel}>従業員番号</label>
+            <input style={S.inp} type="number" placeholder="例: 1001"
+              value={empNo} onChange={e=>setEmpNo(e.target.value)}/>
+          </div>
+          <div style={{fontSize:13,color:"#888",textAlign:"center",marginBottom:4}}>PINコード（4桁）</div>
+          <div style={S.pinDots(pinError)}>
+            {[0,1,2,3].map(i=><div key={i} style={S.dot(i<pinInput.length)}/>)}
+          </div>
+          {pinError && <div style={{textAlign:"center",color:"#E53935",fontSize:13,marginBottom:12}}>PINが違います</div>}
+        </div>
+        <div style={S.numpad}>
+          {["1","2","3","4","5","6","7","8","9","","0","del"].map((k,i)=>(
+            <button key={i} style={{...S.numBtn,opacity:k===""?0:1,fontSize:k==="del"?16:22,pointerEvents:k===""?"none":"auto"}}
+              onClick={()=>k&&handlePinKey(k)}>{k==="del"?"⌫":k}</button>
+          ))}
+        </div>
+        <button style={S.backBtn} onClick={()=>setScreen("company")}>← 戻る</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.loginRoot}>
+      <div style={S.loginCard}>
+        <div style={S.bigLogo}>楽給.com</div>
+        <div style={S.logoSub}>打刻システム</div>
+        <div style={S.inputWrap}>
+          <label style={S.inputLabel}>会社ID</label>
+          <input style={S.inp} placeholder="会社IDを入力"
+            value={companyId} onChange={e=>setCompanyId(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&handleCompany()}/>
+        </div>
+        {locErr && <div style={S.errMsg}>{locErr}</div>}
+        <button style={{...S.primaryBtn,marginTop:locErr?8:0}} onClick={handleCompany}>次へ →</button>
+      </div>
+    </div>
+  );
+}
+
 // ============================================================
 // SUPER ADMIN SCREEN
 // ============================================================
@@ -1559,6 +1892,46 @@ function SettingsTab({ settings, setSettings, saveSettings, setEmployees, employ
               </div>
             </div>
           ))}
+        </div>
+      </Section>
+
+      {/* GPS打刻設定 */}
+      <Section title="📍 打刻・位置情報設定">
+        <div style={S.formGrid}>
+          <div style={S.formRow}>
+            <label style={S.formLabel}>会社住所から自動取得</label>
+            <button style={{...S.editBtn,background:"#6c63ff",color:"white",border:"none",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontSize:12}}
+              onClick={async()=>{
+                const addr = s.companyAddress;
+                if(!addr){alert("先に会社住所を入力してください");return;}
+                try{
+                  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addr)}&limit=1`);
+                  const data = await res.json();
+                  if(data[0]){
+                    upd("kintaiLat", parseFloat(data[0].lat));
+                    upd("kintaiLng", parseFloat(data[0].lon));
+                  } else { alert("住所が見つかりませんでした"); }
+                }catch(e){alert("取得に失敗しました");}
+              }}>📍 住所から自動取得</button>
+          </div>
+          <div style={S.formRow}>
+            <label style={S.formLabel}>緯度</label>
+            <input style={S.formInput} type="number" step="0.000001" value={s.kintaiLat||""} onChange={e=>upd("kintaiLat",parseFloat(e.target.value)||null)} placeholder="例: 35.681236"/>
+          </div>
+          <div style={S.formRow}>
+            <label style={S.formLabel}>経度</label>
+            <input style={S.formInput} type="number" step="0.000001" value={s.kintaiLng||""} onChange={e=>upd("kintaiLng",parseFloat(e.target.value)||null)} placeholder="例: 139.767125"/>
+          </div>
+          <div style={S.formRow}>
+            <label style={S.formLabel}>許容範囲（m）</label>
+            <input style={S.formInput} type="number" value={s.kintaiRange||300} onChange={e=>upd("kintaiRange",parseInt(e.target.value)||300)} placeholder="300"/>
+          </div>
+          {s.kintaiLat&&s.kintaiLng&&<div style={S.formRow}>
+            <label style={S.formLabel}>打刻URL</label>
+            <div style={{fontSize:12,color:"#6c63ff",padding:"8px 12px",background:"#f0edff",borderRadius:8,wordBreak:"break-all"}}>
+              {window.location.origin}/kintai?company={s.companyName||"(会社ID)"}
+            </div>
+          </div>}
         </div>
       </Section>
 
@@ -1884,7 +2257,7 @@ function EmployeeList({ employees, searchText, setSearchText, onEdit, onAdd, onD
 // EMPLOYEE MODAL
 // ============================================================
 function EmployeeModal({ emp, settings, onSave, onClose }) {
-  const blank = { code:"",name:"",nameKana:"",zipCode:"",address:"",department:settings.departments[0]||"",employmentType:"正社員",payType:"月給制",insuranceFlags:{healthInsurance:true,welfarePension:true,employmentInsurance:true},baseSalary:200000,dailyWage:0,transportAllowance:0,housingAllowance:0,otherAllowance:0,age:30,dependents:0,residentTax:0,joinDate:"",retireDate:"",hourlyWage:1000,monthlyHours:80,enabledIncentives:[] };
+  const blank = { code:"",name:"",nameKana:"",zipCode:"",address:"",department:settings.departments[0]||"",employmentType:"正社員",payType:"月給制",insuranceFlags:{healthInsurance:true,welfarePension:true,employmentInsurance:true},baseSalary:200000,dailyWage:0,transportAllowance:0,housingAllowance:0,otherAllowance:0,age:30,dependents:0,residentTax:0,joinDate:"",retireDate:"",hourlyWage:1000,monthlyHours:80,enabledIncentives:[],pin:"" };
   const [form, setForm] = useState(emp||blank);
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
   const isPT = form.employmentType==="パート"||form.employmentType==="アルバイト";
@@ -1894,7 +2267,7 @@ function EmployeeModal({ emp, settings, onSave, onClose }) {
       <div style={S.modal} onClick={e=>e.stopPropagation()}>
         <h3 style={S.modalTitle}>{emp?"従業員編集":"新規従業員登録"}</h3>
         <div style={S.formGrid}>
-          {[["従業員コード","code","text"],["氏名","name","text"],["氏名（カナ）","nameKana","text"],["入社日","joinDate","date"],["退職日","retireDate","date"],["年齢","age","number"],["扶養人数","dependents","number"]].map(([label,key,type])=>(
+          {[["従業員コード","code","text"],["氏名","name","text"],["氏名（カナ）","nameKana","text"],["入社日","joinDate","date"],["退職日","retireDate","date"],["打刻PIN(4桁)","pin","text"],["年齢","age","number"],["扶養人数","dependents","number"]].map(([label,key,type])=>(
             <div key={key} style={S.formRow}><label style={S.formLabel}>{label}</label><input style={S.formInput} type={type} value={form[key]} onChange={e=>set(key,type==="number"?Number(e.target.value):e.target.value)}/></div>
           ))}
           <div style={S.formRow}><label style={S.formLabel}>部署</label><select style={S.formInput} value={form.department} onChange={e=>set("department",e.target.value)}>{settings.departments.map(d=><option key={d}>{d}</option>)}</select></div>
@@ -2881,6 +3254,145 @@ function WithholdingTax({ employees, settings, getMI, getAtt, selectedMonth, set
 // ============================================================
 // SHARED COMPONENTS
 // ============================================================
+// ============================================================
+// TIMECARD TAB（管理者用打刻履歴・編集）
+// ============================================================
+function TimecardTab({ employees, settings, selectedMonth, setSelectedMonth, getTC, updateTC, deleteTC, getAtt, setAtt }) {
+  const [selectedEmp, setSelectedEmp] = useState(null);
+  const [editIdx,     setEditIdx]     = useState(null);
+  const [editForm,    setEditForm]    = useState({});
+
+  const STAMP_TYPES = [
+    { id:"in",        label:"出勤"  },
+    { id:"out",       label:"退勤"  },
+    { id:"break_out", label:"休憩出" },
+    { id:"break_in",  label:"休憩戻" },
+  ];
+  const LOG_COLOR = { in:"#FF6B2B", out:"#E53935", break_out:"#F59F00", break_in:"#2196F3" };
+
+  const tc = getTC(selectedMonth);
+  const activeEmps = employees.filter(e=>!e.retireDate||!e.retireDate.trim());
+
+  // 打刻から勤怠に自動反映
+  const applyToAttendance = (empId, logs) => {
+    if (!logs || logs.length===0) return;
+    // 日付ごとに集計
+    const byDate = {};
+    logs.forEach(entry=>{
+      const d = entry.date||"";
+      if (!byDate[d]) byDate[d] = [];
+      byDate[d].push(entry);
+    });
+    let workDays=0, totalMinutes=0;
+    Object.values(byDate).forEach(dayLogs=>{
+      const inn  = dayLogs.find(e=>e.type==="in");
+      const out  = dayLogs.find(e=>e.type==="out");
+      if (inn && out) {
+        workDays++;
+        const [ih,im,is] = inn.time.split(":").map(Number);
+        const [oh,om,os] = out.time.split(":").map(Number);
+        const breakMins = dayLogs.filter(e=>e.type==="break_out").length * 60;
+        totalMinutes += (oh*60+om) - (ih*60+im) - breakMins;
+      }
+    });
+    const actualHours = Math.round(totalMinutes/60*10)/10;
+    const overtime = Math.max(0, actualHours - settings.workHoursPerDay * workDays);
+    setAtt(selectedMonth, empId, "workDays",    workDays);
+    setAtt(selectedMonth, empId, "actualHours", actualHours);
+    setAtt(selectedMonth, empId, "overtime",    Math.round(overtime*10)/10);
+  };
+
+  const handleDelete = (empId, idx) => {
+    if (!window.confirm("この打刻記録を削除しますか？")) return;
+    deleteTC(selectedMonth, empId, idx);
+    const newLogs = (tc[empId]||[]).filter((_,i)=>i!==idx);
+    applyToAttendance(empId, newLogs);
+  };
+
+  const handleEditSave = (empId) => {
+    updateTC(selectedMonth, empId, editIdx, editForm);
+    const newLogs = (tc[empId]||[]).map((e,i)=>i===editIdx?editForm:e);
+    applyToAttendance(empId, newLogs);
+    setEditIdx(null);
+  };
+
+  return (
+    <div style={{padding:"16px 12px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h2 style={{margin:0,fontSize:18,color:"white"}}>🕐 タイムカード</h2>
+        <MonthPicker value={selectedMonth} onChange={setSelectedMonth}/>
+      </div>
+
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
+        {activeEmps.map(e=>{
+          const logs = tc[e.id]||[];
+          return (
+            <button key={e.id}
+              style={{padding:"8px 14px",borderRadius:8,border:"1px solid",
+                borderColor:selectedEmp===e.id?"#FF6B2B":"#333",
+                background:selectedEmp===e.id?"#FF6B2B22":"#1a1a2e",
+                color:selectedEmp===e.id?"#FF6B2B":"#aaa",fontSize:12,cursor:"pointer"}}
+              onClick={()=>setSelectedEmp(selectedEmp===e.id?null:e.id)}>
+              {e.name} <span style={{opacity:0.6}}>({logs.length})</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {selectedEmp && (()=>{
+        const emp = employees.find(e=>e.id===selectedEmp);
+        const logs = tc[selectedEmp]||[];
+        return (
+          <div style={{background:"#1a1a2e",borderRadius:12,overflow:"hidden"}}>
+            <div style={{padding:"12px 16px",background:"#12122a",borderBottom:"1px solid #2a2a3e",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:"white",fontWeight:700}}>{emp?.name}</span>
+              <button style={{fontSize:11,padding:"5px 10px",background:"#FF6B2B",border:"none",borderRadius:6,color:"white",cursor:"pointer"}}
+                onClick={()=>applyToAttendance(selectedEmp,logs)}>
+                ↩ 勤怠に反映
+              </button>
+            </div>
+            {logs.length===0
+              ? <div style={{padding:20,textAlign:"center",color:"#555",fontSize:13}}>打刻記録がありません</div>
+              : logs.map((entry,i)=>(
+                <div key={i} style={{padding:"10px 16px",borderBottom:"1px solid #1e1e30",display:"flex",alignItems:"center",gap:10}}>
+                  {editIdx===i
+                    ? <>
+                        <select value={editForm.type} onChange={e=>setEditForm(f=>({...f,type:e.target.value}))}
+                          style={{background:"#0f0f1a",border:"1px solid #333",borderRadius:6,color:"white",padding:"4px 8px",fontSize:12}}>
+                          {STAMP_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+                        </select>
+                        <input type="text" value={editForm.time} onChange={e=>setEditForm(f=>({...f,time:e.target.value}))}
+                          style={{background:"#0f0f1a",border:"1px solid #333",borderRadius:6,color:"white",padding:"4px 8px",fontSize:12,width:80}}/>
+                        <input type="text" value={editForm.date||""} onChange={e=>setEditForm(f=>({...f,date:e.target.value}))}
+                          style={{background:"#0f0f1a",border:"1px solid #333",borderRadius:6,color:"white",padding:"4px 8px",fontSize:12,width:100}}/>
+                        <button onClick={()=>handleEditSave(selectedEmp)}
+                          style={{marginLeft:"auto",fontSize:11,padding:"4px 10px",background:"#00c9a7",border:"none",borderRadius:6,color:"white",cursor:"pointer"}}>保存</button>
+                        <button onClick={()=>setEditIdx(null)}
+                          style={{fontSize:11,padding:"4px 10px",background:"none",border:"1px solid #333",borderRadius:6,color:"#aaa",cursor:"pointer"}}>×</button>
+                      </>
+                    : <>
+                        <div style={{width:8,height:8,borderRadius:"50%",background:LOG_COLOR[entry.type],flexShrink:0}}/>
+                        <span style={{fontSize:13,color:LOG_COLOR[entry.type],fontWeight:600,minWidth:48}}>{entry.label}</span>
+                        <span style={{fontSize:12,color:"#888"}}>{entry.date}</span>
+                        <span style={{fontSize:13,color:"white",marginLeft:4}}>{entry.time}</span>
+                        {entry.reason && <span style={{fontSize:11,color:"#F59F00",marginLeft:4}}>📍{entry.reason}</span>}
+                        <button onClick={()=>{setEditIdx(i);setEditForm({...entry});}}
+                          style={{marginLeft:"auto",fontSize:11,padding:"4px 10px",background:"none",border:"1px solid #444",borderRadius:6,color:"#aaa",cursor:"pointer"}}>編集</button>
+                        <button onClick={()=>handleDelete(selectedEmp,i)}
+                          style={{fontSize:11,padding:"4px 10px",background:"none",border:"1px solid #4a1a1a",borderRadius:6,color:"#fc5c65",cursor:"pointer"}}>削除</button>
+                      </>
+                  }
+                </div>
+              ))
+            }
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+
 function MonthPicker({ value, onChange }) {
   return <input type="month" style={{...S.formInput,width:"auto"}} value={value} onChange={e=>onChange(e.target.value)}/>;
 }
