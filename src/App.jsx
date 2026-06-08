@@ -631,8 +631,12 @@ const INITIAL_ATTENDANCE = {
 // MAIN APP
 // ============================================================
 export default function PayrollApp() {
-  const [company,       setCompany]       = useState(null);
-  const [isSuperAdmin,  setIsSuperAdmin]  = useState(false);
+  // localStorageからセッション復元
+  const savedSession = (() => {
+    try { return JSON.parse(localStorage.getItem("rakukyu_session")||"null"); } catch { return null; }
+  })();
+  const [company,       setCompany]       = useState(savedSession?.company||null);
+  const [isSuperAdmin,  setIsSuperAdmin]  = useState(savedSession?.isSuperAdmin||false);
   const [companies,     setCompanies]     = useState(COMPANIES); // 会社一覧（追加可能）
   const [loginId,       setLoginId]       = useState("");
   const [loginPw,       setLoginPw]       = useState("");
@@ -773,6 +777,7 @@ export default function PayrollApp() {
         })
         .catch(e => console.error("load companies error:", e))
         .finally(() => {
+          localStorage.setItem("rakukyu_session", JSON.stringify({ company: null, isSuperAdmin: true }));
           setIsSuperAdmin(true);
         });
       return;
@@ -781,6 +786,7 @@ export default function PayrollApp() {
     const co = companies[loginId];
     if (co && co.password===loginPw) {
       setCompany(co);
+      localStorage.setItem("rakukyu_session", JSON.stringify({ company: co, isSuperAdmin: false }));
       setSettings(s=>({ ...s, companyName:co.name, companyAddress:co.address, companyTel:co.tel }));
       setLoginError("");
       // Redisから初期データ読み込み
@@ -823,7 +829,7 @@ export default function PayrollApp() {
   },[employees,selectedMonth,settings,monthlyIncentives,attendanceData]);
 
   if (!company && !isSuperAdmin) return <LoginScreen loginId={loginId} setLoginId={setLoginId} loginPw={loginPw} setLoginPw={setLoginPw} loginError={loginError} onLogin={handleLogin}/>;
-  if (isSuperAdmin) return <SuperAdminScreen companies={companies} setCompanies={setCompanies} onLogout={()=>{setIsSuperAdmin(false);setLoginId("");setLoginPw("");}} />;
+  if (isSuperAdmin) return <SuperAdminScreen companies={companies} setCompanies={setCompanies} onLogout={()=>{setIsSuperAdmin(false);setLoginId("");setLoginPw("");localStorage.removeItem("rakukyu_session");}} />;
 
   const cp = { employees, settings, setSettings, saveSettings, monthlyIncentives, getMI, setMI, attendanceData, getAtt, setAtt, yearEndData, setYearEndData, saveYearEnd, selectedMonth, setSelectedMonth, company, monthTransport, setMonthTransport, bonusData, getBonus, setBonus, setBonusPayDate };
 
@@ -874,7 +880,7 @@ export default function PayrollApp() {
             {refreshing?"⟳":"↻"}
           </button>
         </div>
-        <button style={S.logoutBtn} onClick={()=>{setCompany(null);setIsSuperAdmin(false);setLoginId("");setLoginPw("");}}>ログアウト</button>
+        <button style={S.logoutBtn} onClick={()=>{setCompany(null);setIsSuperAdmin(false);setLoginId("");setLoginPw("");localStorage.removeItem("rakukyu_session");}}>ログアウト</button>
       </aside>
 
       {/* メインコンテンツ */}
