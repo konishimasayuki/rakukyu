@@ -635,8 +635,9 @@ export default function PayrollApp() {
   const savedSession = (() => {
     try { return JSON.parse(localStorage.getItem("rakukyu_session")||"null"); } catch { return null; }
   })();
-  const [company,       setCompany]       = useState(savedSession?.company||null);
+  const [company,       setCompany]       = useState(null);
   const [isSuperAdmin,  setIsSuperAdmin]  = useState(savedSession?.isSuperAdmin||false);
+  const [loading, setLoading]  = useState(!!savedSession?.company); // 初期ローディング
   const [companies,     setCompanies]     = useState(COMPANIES); // 会社一覧（追加可能）
   const [loginId,       setLoginId]       = useState("");
   const [loginPw,       setLoginPw]       = useState("");
@@ -743,6 +744,32 @@ export default function PayrollApp() {
     setRefreshing(false);
   }, [company, selectedMonth]);
 
+  // リロード時のセッション復元
+  useEffect(()=>{
+    if (!savedSession?.company) return;
+    const co = savedSession.company;
+    const cid = co.id;
+    Promise.all([
+      redisGet(`rakukyu:employees:${cid}`),
+      redisGet(`rakukyu:settings:${cid}`),
+      redisGet(`rakukyu:yearend:${cid}`),
+      redisGet(`rakukyu:attendance:${cid}:${selectedMonth}`),
+      redisGet(`rakukyu:incentives:${cid}:${selectedMonth}`),
+      redisGet(`rakukyu:bonus:${cid}:${selectedMonth}`),
+    ]).then(([emps, sett, ye, att, inc, bon]) => {
+      if (emps) setEmployees(emps);
+      if (sett) setSettings(s=>({...s,...sett,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
+      else      setSettings(s=>({...s,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
+      if (ye)   setYearEndData(ye);
+      if (att)  setAttendanceData(prev=>({...prev,[selectedMonth]:att}));
+      if (inc)  setMonthlyIncentives(prev=>({...prev,[selectedMonth]:inc}));
+      if (bon)  setBonusData(prev=>({...prev,[selectedMonth]:bon}));
+    }).finally(()=>{
+      setCompany(co);
+      setLoading(false);
+    });
+  }, []);
+
   // visibilitychange: 別タブから戻ってきたとき
   useEffect(()=>{
     const onVisible = () => { if (document.visibilityState==="visible") refresh(); };
@@ -785,20 +812,29 @@ export default function PayrollApp() {
     // 通常会社ログイン
     const co = companies[loginId];
     if (co && co.password===loginPw) {
-      setCompany(co);
       localStorage.setItem("rakukyu_session", JSON.stringify({ company: co, isSuperAdmin: false }));
-      setSettings(s=>({ ...s, companyName:co.name, companyAddress:co.address, companyTel:co.tel }));
       setLoginError("");
-      // Redisから初期データ読み込み
+      setLoading(true);
+      // Redisから全データ読み込み完了後に画面表示
       const cid = co.id;
       Promise.all([
         redisGet(`rakukyu:employees:${cid}`),
         redisGet(`rakukyu:settings:${cid}`),
         redisGet(`rakukyu:yearend:${cid}`),
-      ]).then(([emps, sett, ye]) => {
+        redisGet(`rakukyu:attendance:${cid}:${selectedMonth}`),
+        redisGet(`rakukyu:incentives:${cid}:${selectedMonth}`),
+        redisGet(`rakukyu:bonus:${cid}:${selectedMonth}`),
+      ]).then(([emps, sett, ye, att, inc, bon]) => {
         if (emps) setEmployees(emps);
         if (sett) setSettings(s=>({...s,...sett,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
+        else      setSettings(s=>({...s,companyName:co.name,companyAddress:co.address,companyTel:co.tel}));
         if (ye)   setYearEndData(ye);
+        if (att)  setAttendanceData(prev=>({...prev,[selectedMonth]:att}));
+        if (inc)  setMonthlyIncentives(prev=>({...prev,[selectedMonth]:inc}));
+        if (bon)  setBonusData(prev=>({...prev,[selectedMonth]:bon}));
+      }).finally(() => {
+        setCompany(co);
+        setLoading(false);
       });
     } else setLoginError("IDまたはパスワードが正しくありません");
   };
@@ -827,6 +863,14 @@ export default function PayrollApp() {
       return { gross:a.gross+p.grossSalary, net:a.net+p.netSalary, incentive:a.incentive+p.incentiveTotal };
     },{gross:0,net:0,incentive:0});
   },[employees,selectedMonth,settings,monthlyIncentives,attendanceData]);
+
+  if (loading) return (
+    <div style={{minHeight:"100vh",background:"#0f0f1a",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
+      <div style={{width:40,height:40,border:"4px solid #333",borderTop:"4px solid #6c63ff",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+      <div style={{color:"#888",fontSize:13}}>データを読み込み中...</div>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
 
   if (!company && !isSuperAdmin) return <LoginScreen loginId={loginId} setLoginId={setLoginId} loginPw={loginPw} setLoginPw={setLoginPw} loginError={loginError} onLogin={handleLogin}/>;
   if (isSuperAdmin) return <SuperAdminScreen companies={companies} setCompanies={setCompanies} onLogout={()=>{setIsSuperAdmin(false);setLoginId("");setLoginPw("");localStorage.removeItem("rakukyu_session");}} />;
