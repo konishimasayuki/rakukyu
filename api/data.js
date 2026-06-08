@@ -1,28 +1,7 @@
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-async function redisGet(key) {
-  const res = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, {
-    headers: { Authorization: `Bearer ${REDIS_TOKEN}` },
-  });
-  const json = await res.json();
-  if (json.result === null || json.result === undefined) return null;
-  try { return JSON.parse(json.result); }
-  catch(e) { return json.result; }
-}
-
-async function redisSet(key, value) {
-  // valueをJSON文字列にしてbodyに乗せる（Upstashはbodyをそのまま値として保存）
-  const res = await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${REDIS_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(value), // valueがオブジェクト/配列ならJSON文字列になる
-  });
-  return res.json();
-}
+const headers = { Authorization: `Bearer ${REDIS_TOKEN}` };
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -33,30 +12,44 @@ export default async function handler(req, res) {
   const { key } = req.query;
   if (!key) return res.status(400).json({ error: "key is required" });
 
+  // GET
   if (req.method === "GET") {
+    const r = await fetch(
+      `${REDIS_URL}/get/${encodeURIComponent(key)}`,
+      { headers }
+    );
+    const { result } = await r.json();
+    if (!result) return res.status(200).json({ value: null });
     try {
-      const val = await redisGet(key);
-      return res.status(200).json({ value: val });
-    } catch(e) {
-      return res.status(500).json({ error: e.message });
+      return res.status(200).json({ value: JSON.parse(result) });
+    } catch {
+      return res.status(200).json({ value: result });
     }
   }
 
+  // POST - Upstash pipeline方式で確実に書き込む
   if (req.method === "POST") {
+    // bodyを読む
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    
+    let value;
     try {
-      let body = req.body;
-      if (typeof body === "string") body = JSON.parse(body);
-      if (!body) {
-        const chunks = [];
-        for await (const chunk of req) chunks.push(chunk);
-        body = JSON.parse(Buffer.concat(chunks).toString());
-      }
-      const { value } = body;
-      await redisSet(key, value);
-      return res.status(200).json({ ok: true });
-    } catch(e) {
-      return res.status(500).json({ error: e.message });
+      value = JSON.parse(raw).value;
+    } catch {
+      return res.status(400).json({ error: "invalid body" });
     }
+
+    // Upstash pipeline API（最も確実な方式）
+    const r = await fetch(`${REDIS_URL}/pipeline`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify([
+        ["SET", key, JSON.stringify(value)]
+      ]),
+    });
+    const result = await r.json();
+    return res.status(200).json({ ok: true, result });
   }
 
   return res.status(405).json({ error: "Method not allowed" });
